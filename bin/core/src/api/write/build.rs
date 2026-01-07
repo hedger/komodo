@@ -401,7 +401,7 @@ impl Resolve<WriteArgs> for RefreshBuildCache {
       // FILES ON HOST
       // =============
       match get_on_host_dockerfile(&build).await {
-        Ok(FileContents { path, contents }) => {
+        Ok(FileContents { path, contents, .. }) => {
           RemoteDockerfileContents {
             path: Some(path),
             contents: Some(contents),

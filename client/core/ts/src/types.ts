@@ -2355,8 +2355,15 @@ export enum StackFileRequires {
 
 /** Configure additional file dependencies of the Stack. */
 export interface StackFileDependency {
-	/** Specify the file */
+	/** Specify the file path or glob pattern (e.g., "configs/*.conf") */
 	path: string;
+	/** If true, treat path as a glob pattern and expand it to match multiple files */
+	glob?: boolean;
+	/**
+	 * If true, use file hash instead of contents for change detection.
+	 * Useful for large or binary files.
+	 */
+	use_hash?: boolean;
 	/** Specify specific service/s */
 	services?: string[];
 	/** Specify */
@@ -2575,8 +2582,16 @@ export interface StackConfig {
 export interface FileContents {
 	/** The path to the file */
 	path: string;
-	/** The contents of the file */
+	/**
+	 * The contents of the file.
+	 * If hash is present, this may be empty string for large/binary files.
+	 */
 	contents: string;
+	/**
+	 * SHA256 hash of the file contents (for large/binary files).
+	 * If present, use hash comparison instead of contents comparison.
+	 */
+	hash?: string;
 }
 
 export interface StackServiceNames {
@@ -2615,8 +2630,16 @@ export interface StackServiceNames {
 export interface StackRemoteFileContents {
 	/** The path to the file */
 	path: string;
-	/** The contents of the file */
+	/**
+	 * The contents of the file.
+	 * If hash is present, this may be empty string for large/binary files.
+	 */
 	contents: string;
+	/**
+	 * SHA256 hash of the file contents (for large/binary files).
+	 * If present, use hash comparison instead of contents comparison.
+	 */
+	hash?: string;
 	/**
 	 * The services depending on this file,
 	 * or empty for global requirement (eg all compose files and env files).

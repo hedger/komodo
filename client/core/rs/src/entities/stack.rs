@@ -1100,6 +1100,92 @@ impl<'de> Deserialize<'de> for StackFileDependency {
   }
 }
 
+// ===================
+// FILE DEPENDENCY HELPERS
+// ===================
+
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+
+/// Expand a single file dependency, potentially with glob pattern.
+/// Returns a vector of (full_path, file_dependency) tuples.
+pub fn expand_file_dependency(
+  run_directory: &Path,
+  file: StackFileDependency,
+) -> Vec<(PathBuf, StackFileDependency)> {
+  if !file.glob {
+    // Simple case: not a glob, just return the single file
+    let full_path = run_directory
+      .join(&file.path)
+      .components()
+      .collect::<PathBuf>();
+    return vec![(full_path, file)];
+  }
+
+  // Glob case: expand the pattern
+  let pattern = run_directory
+    .join(&file.path)
+    .to_string_lossy()
+    .to_string();
+
+  let Ok(entries) = glob::glob(&pattern) else {
+    // If glob pattern is invalid, treat as missing file
+    let full_path = run_directory
+      .join(&file.path)
+      .components()
+      .collect::<PathBuf>();
+    return vec![(full_path, file)];
+  };
+
+  let mut results = Vec::new();
+  for entry in entries.flatten() {
+    // Only include files, not directories
+    // Use metadata to check if it's a file to handle symlinks properly
+    if let Ok(metadata) = entry.metadata() {
+      if metadata.is_file() {
+        // Get the relative path from run_directory
+        let relative_path = entry
+          .strip_prefix(run_directory)
+          .unwrap_or(&entry)
+          .to_string_lossy()
+          .to_string()
+          // Normalize path separators to forward slashes for consistency
+          .replace('\\', "/");
+
+        let expanded_file = StackFileDependency {
+          path: relative_path,
+          glob: false, // Individual expanded files are not globs
+          use_hash: file.use_hash,
+          services: file.services.clone(),
+          requires: file.requires,
+        };
+
+        results.push((entry, expanded_file));
+      }
+    }
+  }
+
+  results
+}
+
+/// Calculate SHA256 hash of file contents (synchronous version for use in Core)
+pub fn calculate_file_hash_sync(path: &Path) -> anyhow::Result<String> {
+  let bytes = std::fs::read(path)
+    .with_context(|| format!("Failed to read file for hashing: {path:?}"))?;
+  let mut hasher = Sha256::new();
+  hasher.update(&bytes);
+  let hash_bytes = hasher.finalize();
+  Ok(hex::encode(hash_bytes))
+}
+
+/// Calculate SHA256 hash from raw bytes
+pub fn calculate_hash_from_bytes(bytes: &[u8]) -> String {
+  let mut hasher = Sha256::new();
+  hasher.update(bytes);
+  let hash_bytes = hasher.finalize();
+  hex::encode(hash_bytes)
+}
+
 // // This one is nice for TOML, but annoying to use on frontend
 // impl Serialize for StackFileDependency {
 //   fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

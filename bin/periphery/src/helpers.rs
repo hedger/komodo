@@ -325,8 +325,7 @@ pub async fn resolve_host_public_ip() -> anyhow::Result<String> {
       .context("OpenDNS call for public IP didn't return anything")
   })
   .await
-  .context("OpenDNS call for public IP timed out")
-  .flatten()
+  .context("OpenDNS call for public IP timed out")?
 }
 
 // =====

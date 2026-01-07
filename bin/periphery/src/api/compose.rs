@@ -14,7 +14,7 @@ use komodo_client::{
     stack::{
       AdditionalEnvFile, ComposeFile, ComposeService,
       ComposeServiceDeploy, StackRemoteFileContents,
-      StackServiceNames,
+      StackServiceNames, calculate_hash_from_bytes, expand_file_dependency,
     },
     to_path_compatible_name,
     update::Log,
@@ -24,6 +24,7 @@ use komodo_client::{
 use periphery_client::api::{DeployStackResponse, compose::*};
 use resolver_api::Resolve;
 use shell_escape::unix::escape;
+use tokio::fs;
 use tracing::Instrument;
 
 use crate::{
@@ -97,6 +98,18 @@ impl Resolve<crate::api::Args> for GetComposeLogSearch {
 
 //
 
+/// Calculate SHA256 hash of file contents (async version for periphery)
+async fn calculate_file_hash(
+  path: &std::path::Path,
+) -> anyhow::Result<String> {
+  let bytes = fs::read(path)
+    .await
+    .with_context(|| format!("Failed to read file for hashing: {path:?}"))?;
+  Ok(calculate_hash_from_bytes(&bytes))
+}
+
+//
+
 impl Resolve<crate::api::Args> for GetComposeContentsOnHost {
   async fn resolve(
     self,
@@ -115,33 +128,58 @@ impl Resolve<crate::api::Args> for GetComposeContentsOnHost {
 
     let mut res = GetComposeContentsOnHostResponse::default();
 
+    // Expand all file dependencies, including globs
+    let mut expanded_paths = Vec::new();
     for file in file_paths {
-      let full_path = run_directory
-        .join(&file.path)
-        .components()
-        .collect::<PathBuf>();
-      match tokio::fs::read_to_string(&full_path).await.with_context(
-        || {
+      expanded_paths.extend(expand_file_dependency(&run_directory, file));
+    }
+
+    for (full_path, file) in expanded_paths {
+      if file.use_hash {
+        // Use hash instead of contents for large/binary files
+        match calculate_file_hash(&full_path).await {
+          Ok(hash) => {
+            res.contents.push(StackRemoteFileContents {
+              path: file.path,
+              contents: String::new(), // Empty contents when using hash
+              hash: Some(hash),
+              services: file.services,
+              requires: file.requires,
+            });
+          }
+          Err(e) => {
+            res.errors.push(FileContents {
+              path: file.path,
+              contents: format_serror(&e.into()),
+              hash: None,
+            });
+          }
+        }
+      } else {
+        // Use file contents (default behavior)
+        match fs::read_to_string(&full_path).await.with_context(|| {
           format!(
             "Failed to read compose file contents at {full_path:?}"
           )
-        },
-      ) {
-        Ok(contents) => {
-          // The path we store here has to be the same as incoming file path in the array,
-          // in order for WriteComposeContentsToHost to write to the correct path.
-          res.contents.push(StackRemoteFileContents {
-            path: file.path,
-            contents,
-            services: file.services,
-            requires: file.requires,
-          });
-        }
-        Err(e) => {
-          res.errors.push(FileContents {
-            path: file.path,
-            contents: format_serror(&e.into()),
-          });
+        }) {
+          Ok(contents) => {
+            // The path we store here has to be the same as incoming file path in the array,
+            // in order for WriteComposeContentsToHost to write to the correct path.
+            res.contents.push(StackRemoteFileContents {
+              path: file.path,
+              contents,
+              hash: None,
+              services: file.services,
+              requires: file.requires,
+            });
+          }
+          Err(e) => {
+            res.errors.push(FileContents {
+              path: file.path,
+              contents: format_serror(&e.into()),
+              hash: None,
+            });
+          }
         }
       }
     }

@@ -54,3 +54,6 @@ bson.workspace = true
 clap.workspace = true
 envy.workspace = true
 rand.workspace = true
+glob.workspace = true
+sha2.workspace = true
+hex.workspace = true

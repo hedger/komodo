@@ -472,6 +472,7 @@ impl Resolve<WriteArgs> for RefreshStackCache {
               errors: vec![FileContents {
                 path: stack.config.run_directory.clone(),
                 contents: format_serror(&e.into()),
+                hash: None,
               }],
             },
           };

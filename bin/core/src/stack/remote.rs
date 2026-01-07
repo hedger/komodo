@@ -5,7 +5,10 @@ use formatting::format_serror;
 use komodo_client::entities::{
   FileContents, RepoExecutionArgs,
   repo::Repo,
-  stack::{Stack, StackRemoteFileContents},
+  stack::{
+    Stack, StackRemoteFileContents,
+    calculate_file_hash_sync, expand_file_dependency,
+  },
   update::Log,
 };
 
@@ -41,6 +44,7 @@ pub async fn get_repo_compose_contents(
       errored: vec![FileContents {
         path: format!("Failed at: {}", failure.stage),
         contents: failure.combined(),
+        hash: None,
       }],
       ..Default::default()
     });
@@ -53,27 +57,54 @@ pub async fn get_repo_compose_contents(
   let mut successful = Vec::new();
   let mut errored = Vec::new();
 
+  // Expand all file dependencies, including globs
+  let mut expanded_paths = Vec::new();
   for file in stack.all_file_dependencies() {
-    let file_path = run_directory.join(&file.path);
-    if !file_path.exists()
-      && let Some(missing_files) = &mut missing_files
-    {
-      missing_files.push(file.path.clone());
+    expanded_paths.extend(expand_file_dependency(&run_directory, file));
+  }
+
+  for (file_path, file) in expanded_paths {
+    if !file_path.exists() {
+      if let Some(missing_files) = &mut missing_files {
+        missing_files.push(file.path.clone());
+      }
     }
-    // If file does not exist, will show up in err case so the log is handled
-    match fs::read_to_string(&file_path).with_context(|| {
-      format!("Failed to read file contents from {file_path:?}")
-    }) {
-      Ok(contents) => successful.push(StackRemoteFileContents {
-        path: file.path,
-        contents,
-        services: file.services,
-        requires: file.requires,
-      }),
-      Err(e) => errored.push(FileContents {
-        path: file.path,
-        contents: format_serror(&e.into()),
-      }),
+
+    if file.use_hash {
+      // Use hash instead of contents for large/binary files
+      match calculate_file_hash_sync(&file_path) {
+        Ok(hash) => successful.push(StackRemoteFileContents {
+          path: file.path,
+          contents: String::new(), // Empty contents when using hash
+          hash: Some(hash),
+          services: file.services,
+          requires: file.requires,
+        }),
+        Err(e) => errored.push(FileContents {
+          path: file.path,
+          contents: format_serror(&e.into()),
+          hash: None,
+        }),
+      }
+    } else {
+      // Use file contents (default behavior)
+      // If file does not exist, will show up in err case so the log is handled
+      match fs::read_to_string(&file_path).with_context(|| {
+        format!("Failed to read file contents from {file_path:?}")
+      }) {
+        Ok(contents) => successful.push(StackRemoteFileContents {
+          path: file.path,
+          contents,
+          hash: None,
+          services: file.services,
+          requires: file.requires,
+        }),
+        Err(e) => errored.push(FileContents {
+          path: file.path,
+          contents: format_serror(&e.into()),
+          hash: None,
+        }),
+      }
     }
   }
 

@@ -71,6 +71,7 @@ impl Resolve<crate::api::Args> for GetDockerfileContentsOnHost {
     Ok(GetDockerfileContentsOnHostResponse {
       contents,
       path: full_path.display().to_string(),
+      hash: None,
     })
   }
 }

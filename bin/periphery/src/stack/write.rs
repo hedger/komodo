@@ -388,6 +388,7 @@ fn stack_git_token<R: WriteStackRes>(
     res.add_remote_error(FileContents {
       path: Default::default(),
       contents: error,
+      hash: None,
     });
     anyhow!("failed to find required git token, stopping run")
   })

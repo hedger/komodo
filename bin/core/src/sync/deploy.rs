@@ -564,6 +564,7 @@ fn build_cache_for_stack<'a>(
             for StackRemoteFileContents {
               path,
               contents,
+              hash,
               services: _services,
               requires: _requires,
             } in remote_contents
@@ -571,7 +572,25 @@ fn build_cache_for_stack<'a>(
               if let Some(deployed) =
                 deployed_contents.iter().find(|c| &c.path == path)
               {
-                if &deployed.contents != contents {
+                // Determine if file has changed
+                let file_changed = match (hash, &deployed.hash) {
+                  (Some(latest_hash), Some(deployed_hash)) => {
+                    // Both have hashes - compare hashes
+                    latest_hash != deployed_hash
+                  }
+                  (None, None) => {
+                    // Neither has hash - compare contents (backward compatible)
+                    &deployed.contents != contents
+                  }
+                  _ => {
+                    // One has hash, the other doesn't - treat as changed
+                    // This handles the migration case where old deployments
+                    // used contents but new ones use hashes
+                    true
+                  }
+                };
+
+                if file_changed {
                   cache.insert(
                     target,
                     Some((

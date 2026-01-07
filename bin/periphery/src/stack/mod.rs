@@ -7,7 +7,10 @@ use formatting::format_serror;
 use komodo_client::entities::{
   FileContents, RepoExecutionArgs,
   repo::Repo,
-  stack::{Stack, StackFileDependency, StackRemoteFileContents},
+  stack::{
+    Stack, StackRemoteFileContents,
+    calculate_hash_from_bytes, expand_file_dependency,
+  },
   to_path_compatible_name,
   update::Log,
 };
@@ -15,7 +18,6 @@ use periphery_client::api::{
   DeployStackResponse, git::PullOrCloneRepo,
 };
 use resolver_api::Resolve as _;
-use sha2::{Digest, Sha256};
 use tokio::fs;
 
 use crate::{
@@ -131,77 +133,12 @@ pub async fn pull_or_clone_stack(
   Ok(root)
 }
 
-
-/// Expand a single file dependency, potentially with glob pattern.
-/// Returns a vector of (full_path, file_dependency) tuples.
-fn expand_file_dependency(
-  run_directory: &Path,
-  file: StackFileDependency,
-) -> Vec<(PathBuf, StackFileDependency)> {
-  if !file.glob {
-    // Simple case: not a glob, just return the single file
-    let full_path = run_directory
-      .join(&file.path)
-      .components()
-      .collect::<PathBuf>();
-    return vec![(full_path, file)];
-  }
-
-  // Glob case: expand the pattern
-  let pattern = run_directory
-    .join(&file.path)
-    .to_string_lossy()
-    .to_string();
-
-  let Ok(entries) = glob::glob(&pattern) else {
-    // If glob pattern is invalid, treat as missing file
-    let full_path = run_directory
-      .join(&file.path)
-      .components()
-      .collect::<PathBuf>();
-    return vec![(full_path, file)];
-  };
-
-  let mut results = Vec::new();
-  for entry in entries.flatten() {
-    // Only include files, not directories
-    // Use metadata to check if it's a file to handle symlinks properly
-    if let Ok(metadata) = entry.metadata() {
-      if metadata.is_file() {
-        // Get the relative path from run_directory
-        let relative_path = entry
-          .strip_prefix(run_directory)
-          .unwrap_or(&entry)
-          .to_string_lossy()
-          .to_string()
-          // Normalize path separators to forward slashes for consistency
-          .replace('\\', "/");
-
-        let expanded_file = StackFileDependency {
-          path: relative_path,
-          glob: false, // Individual expanded files are not globs
-          use_hash: file.use_hash,
-          services: file.services.clone(),
-          requires: file.requires,
-        };
-
-        results.push((entry, expanded_file));
-      }
-    }
-  }
-
-  results
-}
-
-/// Calculate SHA256 hash of file contents
+/// Calculate SHA256 hash of file contents (async version for periphery)
 async fn calculate_file_hash(path: &Path) -> anyhow::Result<String> {
   let bytes = fs::read(path)
     .await
     .with_context(|| format!("Failed to read file for hashing: {path:?}"))?;
-  let mut hasher = Sha256::new();
-  hasher.update(&bytes);
-  let hash_bytes = hasher.finalize();
-  Ok(hex::encode(hash_bytes))
+  Ok(calculate_hash_from_bytes(&bytes))
 }
 
 #[instrument(
