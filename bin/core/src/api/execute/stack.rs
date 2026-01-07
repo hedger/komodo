@@ -242,6 +242,7 @@ impl Resolve<ExecuteArgs> for DeployStack {
               .map(|f| FileContents {
                 path: f.path.clone(),
                 contents: f.contents.clone(),
+                hash: f.hash.clone(),
               })
               .collect(),
           ),
@@ -634,6 +635,7 @@ async fn update_deployed_contents_with_latest(
     .map(|f| FileContents {
       path: f.path,
       contents: f.contents,
+      hash: f.hash,
     })
     .collect::<Vec<_>>();
   if let Err(e) = (async {
@@ -698,8 +700,27 @@ fn resolve_deploy_if_changed_action(
       // deploy to align this.
       return DeployIfChangedAction::FullDeploy;
     };
+    
+    // Determine if file has changed
+    let file_changed = match (&latest.hash, &deployed.hash) {
+      (Some(latest_hash), Some(deployed_hash)) => {
+        // Both have hashes - compare hashes
+        latest_hash != deployed_hash
+      }
+      (None, None) => {
+        // Neither has hash - compare contents (backward compatible)
+        latest.contents != deployed.contents
+      }
+      _ => {
+        // One has hash, the other doesn't - treat as changed
+        // This handles the migration case where old deployments
+        // used contents but new ones use hashes
+        true
+      }
+    };
+    
     // Ignore unchanged files
-    if latest.contents == deployed.contents {
+    if !file_changed {
       continue;
     }
     match (latest.requires, latest.services.is_empty()) {

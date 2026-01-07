@@ -7,7 +7,7 @@ use formatting::format_serror;
 use komodo_client::entities::{
   FileContents, RepoExecutionArgs,
   repo::Repo,
-  stack::{Stack, StackRemoteFileContents},
+  stack::{Stack, StackFileDependency, StackRemoteFileContents},
   to_path_compatible_name,
   update::Log,
 };
@@ -15,6 +15,8 @@ use periphery_client::api::{
   DeployStackResponse, git::PullOrCloneRepo,
 };
 use resolver_api::Resolve as _;
+use sha2::{Digest, Sha256};
+use tokio::fs;
 
 use crate::{
   api::Args, config::periphery_config, docker::docker_login,
@@ -129,6 +131,79 @@ pub async fn pull_or_clone_stack(
   Ok(root)
 }
 
+
+/// Expand a single file dependency, potentially with glob pattern.
+/// Returns a vector of (full_path, file_dependency) tuples.
+fn expand_file_dependency(
+  run_directory: &Path,
+  file: StackFileDependency,
+) -> Vec<(PathBuf, StackFileDependency)> {
+  if !file.glob {
+    // Simple case: not a glob, just return the single file
+    let full_path = run_directory
+      .join(&file.path)
+      .components()
+      .collect::<PathBuf>();
+    return vec![(full_path, file)];
+  }
+
+  // Glob case: expand the pattern
+  let pattern = run_directory
+    .join(&file.path)
+    .to_string_lossy()
+    .to_string();
+
+  let Ok(entries) = glob::glob(&pattern) else {
+    // If glob pattern is invalid, treat as missing file
+    let full_path = run_directory
+      .join(&file.path)
+      .components()
+      .collect::<PathBuf>();
+    return vec![(full_path, file)];
+  };
+
+  let mut results = Vec::new();
+  for entry in entries.flatten() {
+    // Only include files, not directories
+    // Use metadata to check if it's a file to handle symlinks properly
+    if let Ok(metadata) = entry.metadata() {
+      if metadata.is_file() {
+        // Get the relative path from run_directory
+        let relative_path = entry
+          .strip_prefix(run_directory)
+          .unwrap_or(&entry)
+          .to_string_lossy()
+          .to_string()
+          // Normalize path separators to forward slashes for consistency
+          .replace('\\', "/");
+
+        let expanded_file = StackFileDependency {
+          path: relative_path,
+          glob: false, // Individual expanded files are not globs
+          use_hash: file.use_hash,
+          services: file.services.clone(),
+          requires: file.requires,
+        };
+
+        results.push((entry, expanded_file));
+      }
+    }
+  }
+
+  results
+}
+
+/// Calculate SHA256 hash of file contents
+async fn calculate_file_hash(path: &Path) -> anyhow::Result<String> {
+  let bytes = fs::read(path)
+    .await
+    .with_context(|| format!("Failed to read file for hashing: {path:?}"))?;
+  let mut hasher = Sha256::new();
+  hasher.update(&bytes);
+  let hash_bytes = hasher.finalize();
+  Ok(hex::encode(hash_bytes))
+}
+
 #[instrument(
   "ValidateStackFiles",
   skip(stack, res),
@@ -139,20 +214,11 @@ pub async fn validate_files(
   run_directory: &Path,
   res: &mut DeployStackResponse,
 ) {
-  let file_paths = stack
-    .all_file_dependencies()
-    .into_iter()
-    .map(|file| {
-      (
-        // This will remove any intermediate uneeded '/./' in the path
-        run_directory
-          .join(&file.path)
-          .components()
-          .collect::<PathBuf>(),
-        file,
-      )
-    })
-    .collect::<Vec<_>>();
+  // Expand all file dependencies, including globs
+  let mut file_paths = Vec::new();
+  for file in stack.all_file_dependencies() {
+    file_paths.extend(expand_file_dependency(run_directory, file));
+  }
 
   // First validate no missing files
   for (full_path, file) in &file_paths {
@@ -175,30 +241,62 @@ pub async fn validate_files(
     return;
   }
 
+  // Process each file
   for (full_path, file) in file_paths {
-    let file_contents =
-      match tokio::fs::read_to_string(&full_path).await.with_context(
-        || format!("Failed to read file contents at {full_path:?}"),
-      ) {
-        Ok(res) => res,
+    if file.use_hash {
+      // Use hash instead of contents for large/binary files
+      match calculate_file_hash(&full_path).await {
+        Ok(hash) => {
+          res.file_contents.push(StackRemoteFileContents {
+            path: file.path,
+            contents: String::new(), // Empty contents when using hash
+            hash: Some(hash),
+            services: file.services,
+            requires: file.requires,
+          });
+        }
         Err(e) => {
           let error = format_serror(&e.into());
           res
             .logs
-            .push(Log::error("Read Compose File", error.clone()));
+            .push(Log::error("Calculate File Hash", error.clone()));
           // This should only happen for repo stacks, ie remote error
           res.remote_errors.push(FileContents {
             path: file.path,
             contents: error,
+            hash: None,
           });
           return;
         }
-      };
-    res.file_contents.push(StackRemoteFileContents {
-      path: file.path,
-      contents: file_contents,
-      services: file.services,
-      requires: file.requires,
-    });
+      }
+    } else {
+      // Use file contents (default behavior)
+      let file_contents =
+        match fs::read_to_string(&full_path).await.with_context(|| {
+          format!("Failed to read file contents at {full_path:?}")
+        }) {
+          Ok(res) => res,
+          Err(e) => {
+            let error = format_serror(&e.into());
+            res
+              .logs
+              .push(Log::error("Read Compose File", error.clone()));
+            // This should only happen for repo stacks, ie remote error
+            res.remote_errors.push(FileContents {
+              path: file.path,
+              contents: error,
+              hash: None,
+            });
+            return;
+          }
+        };
+      res.file_contents.push(StackRemoteFileContents {
+        path: file.path,
+        contents: file_contents,
+        hash: None,
+        services: file.services,
+        requires: file.requires,
+      });
+    }
   }
 }

@@ -392,8 +392,13 @@ pub struct LatestCommit {
 pub struct FileContents {
   /// The path to the file
   pub path: String,
-  /// The contents of the file
+  /// The contents of the file.
+  /// If hash is present, this may be empty string for large/binary files.
   pub contents: String,
+  /// SHA256 hash of the file contents (for large/binary files).
+  /// If present, use hash comparison instead of contents comparison.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub hash: Option<String>,
 }
 
 /// Represents a scheduled maintenance window
