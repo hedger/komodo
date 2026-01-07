@@ -768,8 +768,13 @@ pub struct ComposeServiceDeploy {
 pub struct StackRemoteFileContents {
   /// The path to the file
   pub path: String,
-  /// The contents of the file
+  /// The contents of the file.
+  /// If hash is present, this may be empty string for large/binary files.
   pub contents: String,
+  /// SHA256 hash of the file contents (for large/binary files).
+  /// If present, use hash comparison instead of contents comparison.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub hash: Option<String>,
   /// The services depending on this file,
   /// or empty for global requirement (eg all compose files and env files).
   #[serde(default)]
@@ -808,8 +813,15 @@ pub enum StackFileRequires {
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct StackFileDependency {
-  /// Specify the file
+  /// Specify the file path or glob pattern (e.g., "configs/*.conf")
   pub path: String,
+  /// If true, treat path as a glob pattern and expand it to match multiple files
+  #[serde(default, skip_serializing_if = "is_false")]
+  pub glob: bool,
+  /// If true, use file hash instead of contents for change detection.
+  /// Useful for large or binary files.
+  #[serde(default, skip_serializing_if = "is_false")]
+  pub use_hash: bool,
   /// Specify specific service/s
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub services: Vec<String>,
@@ -818,10 +830,16 @@ pub struct StackFileDependency {
   pub requires: StackFileRequires,
 }
 
+fn is_false(b: &bool) -> bool {
+  !b
+}
+
 impl StackFileDependency {
   pub fn full_redeploy(path: String) -> StackFileDependency {
     StackFileDependency {
       path,
+      glob: false,
+      use_hash: false,
       services: Vec::new(),
       requires: StackFileRequires::Redeploy,
     }
@@ -836,6 +854,10 @@ fn is_none(requires: &StackFileRequires) -> bool {
 #[derive(Deserialize)]
 struct __StackFileDependency {
   path: String,
+  #[serde(default)]
+  glob: bool,
+  #[serde(default)]
+  use_hash: bool,
   #[serde(
     default,
     alias = "service",
@@ -869,6 +891,8 @@ impl<'de> Deserialize<'de> for StackFileDependency {
       {
         Ok(StackFileDependency {
           path,
+          glob: false,
+          use_hash: false,
           services: Vec::new(),
           requires: StackFileRequires::None,
         })
@@ -890,6 +914,8 @@ impl<'de> Deserialize<'de> for StackFileDependency {
         )
         .map(|v| StackFileDependency {
           path: v.path,
+          glob: v.glob,
+          use_hash: v.use_hash,
           services: v.services,
           requires: v.requires,
         })
